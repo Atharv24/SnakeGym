@@ -4,28 +4,37 @@ from gym import spaces
 import cv2
 
 class SnakeEnv(object):
-    def __init__(self, gridSize=32, initialSnakeLength=4, render=False, renderID=0, renderWait=100):
+    def __init__(self, gridSize=32, visionRadius=3, initialSnakeLength=4, renderID=0, renderWait=100, channel_first=False):
         self.initialLength = initialSnakeLength
         self.gridSize = gridSize
-        self.state = np.zeros((self.gridSize, self.gridSize), float)
-        self.appleReward = 50
-        self.collisionReward = -100
-        self.appleCount = 15
+        self.visionRadius = visionRadius
+        self.appleReward = 1
+        self.collisionReward = -1
+        self.appleCount = 1
         self.info = None
-        self.observation_space = spaces.Box(low=0, high=1.0, shape=(self.gridSize, self.gridSize))
+        self.observation_space = spaces.Box(low=0, high=1.0, shape=(self.visionRadius*2 + 1, self.visionRadius*2 + 1, 3), dtype=np.float32)
         self.action_space = spaces.Discrete(3)
-        self.render = render
         self.renderID = renderID
         self.renderWait = renderWait
+        self.channel_first = channel_first
 
     def step(self, action):
         if self.done:
-            return self.state, 0,  self.done, self.info
+            return self.get_state(), 0,  self.done, self.info
 
         history = []
         history.append(self.head)
         history.extend(self.tail[:-1])
         tailend = self.tail[-1]
+
+        """if(action==0):
+            head = [self.head[0]-1, self.head[1]]
+        elif(action==1):
+            head = [self.head[0], self.head[1]+1]
+        elif(action==2):
+            head = [self.head[0]+1, self.head[1]]
+        elif(action==3):
+            head = [self.head[0], self.head[1]-1]"""
         if(action == 0):
             if(self.dir==0):
                 head = [self.head[0]-1, self.head[1]]
@@ -66,7 +75,7 @@ class SnakeEnv(object):
 
         self.tail = history
         self.head = head
-        reward=0
+        reward=-0.01
         
         if self.checkApple():
             reward = self.appleReward
@@ -79,15 +88,18 @@ class SnakeEnv(object):
         if not self.done:
             self.updateState()
 
-        if self.render:
-            self.renderFrame()
-
-        return self.state, reward, self.done, self.info
+        return self.get_state(), reward, self.done, self.info
     
+    def get_state(self):
+        if self.channel_first:
+            return np.moveaxis(self.vision, source=-1, destination=0)
+        else:
+            return self.vision
+
     def reset(self):
         self.length = self.initialLength
-        self.head = [self.gridSize//2 + 1, self.gridSize//2 + 1]
-        self.tail = [[self.gridSize//2 + 2 + i, self.gridSize//2 + 1] for i in range(self.initialLength-1)]
+        self.head = [self.gridSize//2 + 1 + self.visionRadius, self.gridSize//2 + 1 + self.visionRadius]
+        self.tail = [[self.gridSize//2 + 2 + self.visionRadius + i, self.gridSize//2 + 1 + self.visionRadius] for i in range(self.initialLength-1)]
         self.dir = 0
 
         self.apples = []
@@ -97,21 +109,26 @@ class SnakeEnv(object):
         self.done = False
         self.updateState()
 
-        return self.state
+        return self.get_state()
 
     def updateState(self):
-        self.state = np.zeros((self.gridSize, self.gridSize), float)
+        self.state = np.ones((self.gridSize + self.visionRadius*2, self.gridSize + self.visionRadius*2, 3), float)
+        self.state[self.visionRadius:-self.visionRadius, self.visionRadius:-self.visionRadius, :] = [0, 0, 0]
         for apple in self.apples:
-            self.state[apple[0]-1, apple[1]-1] = 1
-        self.state[self.head[0]-1, self.head[1]-1] = 0.75
+            self.state[apple[0]-1, apple[1]-1, :] = [0, 1, 0]
+        self.state[self.head[0]-1, self.head[1]-1, :] = [0, 0, 1]
         for coor in self.tail:
-            self.state[coor[0]-1, coor[1]-1] = 0.5
+            self.state[coor[0]-1, coor[1]-1, :] = [1, 0, 0]
+        self.vision = self.state[self.head[0] - self.visionRadius-1:self.head[0]+self.visionRadius, self.head[1]-self.visionRadius-1:self.head[1]+self.visionRadius, :]
 
     def randomApple(self):
-        apple = [random.randint(1, self.gridSize), random.randint(1, self.gridSize)]
+        apple = [random.randint(1+self.visionRadius, self.gridSize+self.visionRadius), random.randint(1+self.visionRadius, self.gridSize+self.visionRadius)]
         if apple == self.head:
             apple = self.randomApple()
         for coor in self.tail:
+            if apple == coor:
+                apple = self.randomApple()
+        for coor in self.apples:
             if apple == coor:
                 apple = self.randomApple()
         return apple
@@ -120,14 +137,13 @@ class SnakeEnv(object):
         for apple in self.apples:
             if self.head == apple:
                 self.apples.remove(apple)
-                newApple = self.randomApple()
-                self.apples.append(newApple)
+                self.apples.append(self.randomApple())
                 return True
         else:
             return False
 
     def checkCollision(self):
-        if self.head[0] < 1 or self.head[1] < 1 or self.head[0] > self.gridSize or self.head[1] > self.gridSize:
+        if self.head[0] < 1+self.visionRadius or self.head[1] < 1 + self.visionRadius or self.head[0] > self.gridSize+self.visionRadius or self.head[1] > self.gridSize+self.visionRadius:
             self.done = True
             return True
 
@@ -136,7 +152,14 @@ class SnakeEnv(object):
                 self.done = True
                 return True
 
-    def renderFrame(self):
+    def render(self, value=None):
         image = cv2.resize(self.state, (512, 512), interpolation=cv2.INTER_AREA)
-        cv2.imshow(f"Worker{self.renderID}", image)
+        if value:
+            cv2.putText(image, f'Value:{value}', (20, 60), cv2.FONT_HERSHEY_SIMPLEX, 2, (0, 0, 0))
+        cv2.imshow(f"Worker: {self.renderID}", image)
+        #cv2.waitKey(self.renderWait)
+
+    def renderVision(self):
+        image = cv2.resize(self.vision, (256, 256), interpolation=cv2.INTER_AREA)
+        cv2.imshow(f"POV Worker: {self.renderID}", image)
         cv2.waitKey(self.renderWait)

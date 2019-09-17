@@ -1,35 +1,40 @@
 from actor_critic import Agent
-from utils.plotLearning import plotLearning
+import torch
 from utils.multiprocessing_env import SubprocVecEnv
+#from multiprocessing_env import SubprocVecEnv
 import numpy as np
 from SnakeEnv import SnakeEnv
+import configparser
+import gym
 
-ppo_parameters = {"HIDDEN_SIZE1" : 512,
-                    "HIDDEN_SIZE2" : 256,
-                    "LEARNING_RATE" : 1e-5,
-                    "GAMMA" : 0.99,
-                    "PPO_EPSILON" : 0.2,
-                    "ENTROPY_BETA" : 0.001,
-                    "MINI_BATCH_SIZE" : 128,
-                    "PPO_EPOCHS" : 8,
-                    "CRITIC_DISCOUNT" : 0.5
-                    }
+config = configparser.ConfigParser()
+config.read('config.ini')
 
-NUM_ENVS            = 3
-PPO_STEPS           = 256
+ppo_parameters = config['DEFAULT']
+network_parameters = config['NETWORK_PARAMETERS']
+
+NUM_ENVS            = int(ppo_parameters['NUM_ENVS'])
+PPO_STEPS           = int(ppo_parameters['PPO_STEPS'])
 GAE_LAMBDA          = 0.95
+
 TEST_EPOCHS         = 10
-NUM_TESTS           = 10
-TARGET_REWARD       = 2500
+TEST_FREQ           = int(ppo_parameters['TEST_FREQ'])
+MIN_TEST            = 8
+TARGET_REWARD       = 20
+
+RENDER_TESTING = int(ppo_parameters['RENDER_TESTING'])
+RENDER_WAIT_TIME = int(ppo_parameters['RENDER_WAIT_TIME'])
+
 
 N_ACTIONS = 3
-GRIDSIZE = 32
-INITIAL_LENGTH = 10
+GRIDSIZE = 16
+VISION_RADIUS = 8
+INITIAL_LENGTH = 5
 
-def make_env(renderID):
+def make_env():
     # returns a function which creates a single environment
     def _thunk():
-        env = SnakeEnv(GRIDSIZE, INITIAL_LENGTH, render=True, renderID=renderID, renderWait = 20)
+        env = SnakeEnv(GRIDSIZE, VISION_RADIUS, INITIAL_LENGTH, channel_first=True)
         return env
     return _thunk
 
@@ -38,8 +43,12 @@ def test_env(env, agent):
     done = False
     total_reward = 0
     while not done:
-        action = agent.choose_action(state)
-        next_state, reward, done, _ = env.step(action)
+        state = torch.FloatTensor(state).unsqueeze(0).to(agent.device)
+        action, _, value = agent.choose_action(state)
+        if RENDER_TESTING:
+            env.render(value.detach().cpu().numpy()[0])
+            env.renderVision()
+        next_state, reward, done, _ = env.step(action.cpu().numpy()[0])
         state = next_state
         total_reward += reward
     return total_reward
@@ -50,7 +59,7 @@ def normalize(x):
     return x
 
 
-def compute_gae(next_value, rewards, masks, values, gamma=ppo_parameters['GAMMA'], lam=GAE_LAMBDA):
+def compute_gae(next_value, rewards, masks, values, gamma=float(ppo_parameters['GAMMA']), lam=GAE_LAMBDA):
     values = values + [next_value]
     gae = 0
     returns = []
@@ -63,13 +72,18 @@ def compute_gae(next_value, rewards, masks, values, gamma=ppo_parameters['GAMMA'
 
 if __name__ == '__main__':
 
-    agent = Agent(n_actions = N_ACTIONS, input_dims=[GRIDSIZE, GRIDSIZE], parameters=ppo_parameters)
+    agent = Agent(n_actions = N_ACTIONS, input_channels=3, ppo_parameters=ppo_parameters, network_parameters=network_parameters)
+    agent.load_model('trained_models/FullGrid')
 
-    envs = [make_env(i) for i in range(NUM_ENVS)]
+    envs = [make_env() for i in range(NUM_ENVS)]
     envs = SubprocVecEnv(envs)
+    env = SnakeEnv(GRIDSIZE, VISION_RADIUS, INITIAL_LENGTH, renderWait = RENDER_WAIT_TIME, channel_first=True)
 
     state = envs.reset()
     early_stop = False
+    
+    training_epochs = 0
+    frame_idx = 0
 
     while not early_stop:
         log_probs = []
@@ -80,41 +94,54 @@ if __name__ == '__main__':
         masks     = []
 
         for _ in range(PPO_STEPS):
-            action, log_prob = agent.choose_action(state)
-            value = agent.get_state_value(state)
-            next_state, reward, done, _ = envs.step(action)
+            state = torch.FloatTensor(state).to(agent.device)
+            action, log_prob, value = agent.choose_action(state)
+            next_state, reward, done, _ = envs.step(action.cpu().numpy())
             log_probs.append(log_prob)
             values.append(value)
-            rewards.append(reward)
-            masks.append(1-done)
+            rewards.append(torch.FloatTensor(reward).unsqueeze(1).to(agent.device))
+            masks.append(torch.FloatTensor(1 - done).unsqueeze(1).to(agent.device))
             
             states.append(state)
             actions.append(action)
             
             state = next_state
+            frame_idx+=1
 
-        next_value = agent.get_state_value(state)
+        next_state = torch.FloatTensor(next_state).to(agent.device)
+        _, _, next_value = agent.choose_action(next_state)
         returns = compute_gae(next_value, rewards, masks, values)
 
-        returns = np.array(returns)
-        log_probs = np.array(log_probs)
-        values = np.array(values)
-        states = np.array(states)
-        actions = np.array(actions)
-        rewards = np.array(rewards)
-
+        returns   = torch.cat(returns).detach()
+        log_probs = torch.cat(log_probs).detach()
+        values    = torch.cat(values).detach()
+        states    = torch.cat(states)
+        actions   = torch.cat(actions)
         advantages = returns - values
         advantages = normalize(advantages)
 
+        agent.learn(frame_idx = frame_idx, states=states, actions=actions, log_probs=log_probs, advantages=advantages, returns=returns)
+        training_epochs+=1
 
-        states = np.reshape(states, (-1, GRIDSIZE, GRIDSIZE))
-        log_probs = np.reshape(log_probs, (-1, N_ACTIONS))
-        advantages = np.reshape(advantages, (-1, 1))
-        rewards = np.reshape(rewards, (-1, 1))
-        values = np.reshape(values, (-1, 1))
-        actions = np.reshape(actions, (-1, 1))
-        returns = np.reshape(returns, (-1, 1))
+        if training_epochs%TEST_FREQ == 0:
+            agent.save_model()
+            test_rewards = []
+            reward_sum = 0
+            games_cleared = 0
+            for _ in range(TEST_EPOCHS):
+                total_reward = test_env(env, agent)
+                reward_sum+=total_reward
+                test_rewards.append(total_reward)
+                if total_reward >= TARGET_REWARD:
+                    games_cleared +=1
+                    if games_cleared == MIN_TEST:
+                        early_stop = True
+                        print("Agent trained successfully!")
+                        break
+            print(f"The Agent cleared {games_cleared}/{MIN_TEST} games this update!")
+            print(f"Average Reward: {reward_sum/TEST_EPOCHS}", "\n")
 
-        agent.learn(states, log_probs, advantages, actions, returns)
-
-
+    if early_stop:
+        RENDER_TESTING = True
+        for _ in range(TEST_EPOCHS):
+            print(test_env(env, agent))

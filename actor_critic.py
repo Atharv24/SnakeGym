@@ -1,73 +1,105 @@
-from tensorflow.keras import backend as K
-from tensorflow.keras.layers import Dense, Activation, Input, Flatten, Conv2D, Reshape
-from tensorflow.keras.models import Model
-from tensorflow.keras.optimizers import Adam
 import numpy as np
+import datetime
+from conv_network import ActorCritic
+import torch
+import torch.optim as optim
+
+from tensorboardX import SummaryWriter
 
 class Agent(object):
-    def __init__(self, input_dims, parameters, n_actions=3):
-        self.gamma = parameters['GAMMA']
-        self.alpha = parameters['LEARNING_RATE']
-        self.input_dims = input_dims
-        self.fc1_dims = parameters['HIDDEN_SIZE1']
-        self.fc2_dims = parameters['HIDDEN_SIZE2']
+    def __init__(self, input_channels, network_parameters, ppo_parameters=None, n_actions=3):
+        if ppo_parameters:
+            self.gamma = float(ppo_parameters['GAMMA'])
+            self.alpha = float(ppo_parameters['LEARNING_RATE'])
+            self.ppo_epsilon = float(ppo_parameters['PPO_EPSILON'])
+            self.entropy_beta = float(ppo_parameters['ENTROPY_BETA'])
+            self.minibatch_size = int(ppo_parameters['MINI_BATCH_SIZE'])
+            self.ppo_epochs = int(ppo_parameters['PPO_EPOCHS'])
+            self.critic_discount = float(ppo_parameters['CRITIC_DISCOUNT'])
+            self.save_path = ppo_parameters['SAVE_PATH']
+        
         self.n_actions = n_actions
-        self.ppo_epsilon = parameters['PPO_EPSILON']
-        self.entropy_beta = parameters['ENTROPY_BETA']
-        self.minibatch_size = parameters['MINI_BATCH_SIZE']
-        self.ppo_epochs = parameters['PPO_EPOCHS']
-        self.critic_discount = parameters['CRITIC_DISCOUNT']
-
-        self.actor, self.critic, self.policy = self.build_actor_critic_network()
+        self.input_channels = input_channels
         self.action_space = [i for i in range(n_actions)]
+        
+        self.writer = SummaryWriter()
 
-    def build_actor_critic_network(self):
-        input_frame = Input(shape=(self.input_dims))
-        old_log_prob = Input(shape=(self.n_actions,))
-        advantage = Input(shape=(1,))
+        self.epochs_trained = 0
+        
+        # Autodetect CUDA
+        use_cuda = torch.cuda.is_available()
+        self.device   = torch.device("cuda" if use_cuda else "cpu")
+        print('Device:', self.device)
 
-        flattened_input = Flatten()(input_frame)
-        dense1 = Dense(self.fc1_dims, activation='relu')(flattened_input)
-        dense2 = Dense(self.fc2_dims, activation='relu')(dense1)
-        probs = Dense(self.n_actions, activation='softmax')(dense2)
-        values = Dense(1, activation='linear')(dense2)
-
-        def custom_loss(y_true, y_pred):
-            new_policy_probs = y_pred
-            ratio = K.exp(K.log(new_policy_probs + 1e-8) - old_log_prob)
-            
-            p1 = ratio*advantage
-            p2 = K.clip(ratio, min_value=1-self.ppo_epsilon, max_value=1+self.ppo_epsilon)*advantage
-
-            actor_loss = -K.mean(K.minimum(p1, p2))
-            total_loss = actor_loss - self.entropy_beta * K.mean(-new_policy_probs*K.log(new_policy_probs + 1e-8))
-            return total_loss
-
-        actor = Model(inputs=[input_frame, old_log_prob, advantage], outputs=[probs])
-
-        actor.compile(optimizer=Adam(lr=self.alpha), loss=custom_loss)
-
-        critic = Model(inputs=[input_frame], outputs=[values])
-
-        critic.compile(optimizer=Adam(lr=self.alpha), loss='mean_squared_error')
-
-        policy = Model(inputs=[input_frame], outputs=[probs])
-
-        return actor, critic, policy
+        self.network = ActorCritic(3, self.n_actions, network_parameters).to(self.device)
+        print(self.network)
+        
+        if ppo_parameters:
+            self.optimizer = optim.Adam(self.network.parameters(), lr=self.alpha)
 
     def choose_action(self, observation):
-        probabilities = self.policy.predict(observation)
-        _, n = probabilities.shape
-        action = np.array([np.random.choice(n, p=row) for row in probabilities])
-        log_probs = np.log(probabilities + 1e-8)
+        dist, value = self.network(observation)
+        action = dist.sample()
+        log_prob = dist.log_prob(action)
 
-        return action, log_probs
+        return action, log_prob, value
+
+    def ppo_iter(self, states, actions, log_probs, returns, advantages):
+        batch_size = states.size(0)
+
+        for _ in range(batch_size // self.minibatch_size):
+            rand_ids = np.random.randint(0, batch_size, self.minibatch_size)
+            yield states[rand_ids, :], actions[rand_ids], log_probs[rand_ids], returns[rand_ids, :], advantages[rand_ids, :]
+
+    def learn(self, frame_idx, states, actions, log_probs, returns, advantages):
+        count_steps = 0
+        sum_returns = 0.0
+        sum_advantage = 0.0
+        sum_loss_actor = 0.0
+        sum_loss_critic = 0.0
+        sum_entropy = 0.0
+        sum_loss_total = 0.0
+        
+        for _ in range(self.ppo_epochs):
+            for state, action, old_log_probs, return_, advantage in self.ppo_iter(states, actions, log_probs, returns, advantages):
+                dist, value = self.network(state)
+                entropy = dist.entropy().mean()
+                new_log_probs = dist.log_prob(action)
+
+                ratio = (new_log_probs - old_log_probs).exp()
+                surr1 = ratio * advantage
+                surr2 = torch.clamp(ratio, 1.0 - self.ppo_epsilon, 1.0 + self.ppo_epsilon) * advantage
+
+                actor_loss  = - torch.min(surr1, surr2).mean()
+                critic_loss = (return_ - value).pow(2).mean()
+
+                loss = self.critic_discount * critic_loss + actor_loss - self.entropy_beta * entropy
+
+                self.optimizer.zero_grad()
+                loss.backward()
+                self.optimizer.step()
+
+                sum_returns += return_.mean()
+                sum_advantage += advantage.mean()
+                sum_loss_actor += actor_loss
+                sum_loss_critic += critic_loss
+                sum_loss_total += loss
+                sum_entropy += entropy
+
+                count_steps+=1
+        
+        self.writer.add_scalar("returns", sum_returns / count_steps, frame_idx)
+        self.writer.add_scalar("advantage", sum_advantage / count_steps, frame_idx)
+        self.writer.add_scalar("loss_actor", sum_loss_actor / count_steps, frame_idx)
+        self.writer.add_scalar("loss_critic", sum_loss_critic / count_steps, frame_idx)
+        self.writer.add_scalar("entropy", sum_entropy / count_steps, frame_idx)
+        self.writer.add_scalar("loss_total", sum_loss_total / count_steps, frame_idx)
+        self.writer.flush()
     
-    def get_state_value(self, observation):
-        value = self.critic.predict(observation)
-        return value[:, 0]
 
-    def learn(self, states, log_probs, advantages, actions, returns):
-        actions_one_hot = K.one_hot(actions, self.n_actions)
-        self.actor.fit([states, log_probs, advantages], [actions_one_hot], epochs=self.ppo_epochs, verbose=True, shuffle=True, batch_size=self.minibatch_size)
-        self.critic.fit([states], [returns], epochs=self.ppo_epochs, verbose=True, shuffle=True, batch_size=self.minibatch_size)
+    def save_model(self):
+        torch.save(self.network.state_dict(), self.save_path+'.pt')
+        torch.save(self.optimizer.state_dict(), self.save_path+'-opt.pt')
+    def load_model(self, path):
+        self.network.load_state_dict(torch.load(path+".pt"))
+        self.optimizer.load_state_dict(torch.load(path+"-opt.pt"))
