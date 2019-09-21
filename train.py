@@ -20,7 +20,7 @@ GAE_LAMBDA          = 0.95
 TEST_EPOCHS         = 10
 TEST_FREQ           = int(ppo_parameters['TEST_FREQ'])
 MIN_TEST            = 8
-TARGET_REWARD       = 20
+TARGET_REWARD       = 50
 
 RENDER_TESTING = int(ppo_parameters['RENDER_TESTING'])
 RENDER_WAIT_TIME = int(ppo_parameters['RENDER_WAIT_TIME'])
@@ -28,7 +28,7 @@ RENDER_WAIT_TIME = int(ppo_parameters['RENDER_WAIT_TIME'])
 
 N_ACTIONS = 3
 GRIDSIZE = 16
-VISION_RADIUS = 8
+VISION_RADIUS = 6
 INITIAL_LENGTH = 5
 
 def make_env():
@@ -40,17 +40,20 @@ def make_env():
 
 def test_env(env, agent):
     state = env.reset()
+    hidden = (torch.zeros(1, 128).to(agent.device), torch.zeros(1, 128).to(agent.device))
     done = False
     total_reward = 0
-    while not done:
+    steps = 0
+    while not done and steps<300:
         state = torch.FloatTensor(state).unsqueeze(0).to(agent.device)
-        action, _, value = agent.choose_action(state)
+        action, _, value, hidden = agent.choose_action(state, hidden)
         if RENDER_TESTING:
             env.render(value.detach().cpu().numpy()[0])
             env.renderVision()
         next_state, reward, done, _ = env.step(action.cpu().numpy()[0])
         state = next_state
         total_reward += reward
+        steps+=1
     return total_reward
 
 def normalize(x):
@@ -73,13 +76,14 @@ def compute_gae(next_value, rewards, masks, values, gamma=float(ppo_parameters['
 if __name__ == '__main__':
 
     agent = Agent(n_actions = N_ACTIONS, input_channels=3, ppo_parameters=ppo_parameters, network_parameters=network_parameters)
-    agent.load_model('trained_models/FullGrid')
+    agent.load_model('trained_models/SeventhRun')
 
     envs = [make_env() for i in range(NUM_ENVS)]
     envs = SubprocVecEnv(envs)
     env = SnakeEnv(GRIDSIZE, VISION_RADIUS, INITIAL_LENGTH, renderWait = RENDER_WAIT_TIME, channel_first=True)
 
     state = envs.reset()
+    hidden = [torch.zeros(3, 128).to(agent.device), torch.zeros(3, 128).to(agent.device)]
     early_stop = False
     
     training_epochs = 0
@@ -92,15 +96,21 @@ if __name__ == '__main__':
         actions   = []
         rewards   = []
         masks     = []
+        hiddens_0 = []
+        hiddens_1 = []
 
         for _ in range(PPO_STEPS):
+            hiddens_0.append(hidden[0])
+            hiddens_1.append(hidden[1])
             state = torch.FloatTensor(state).to(agent.device)
-            action, log_prob, value = agent.choose_action(state)
+            action, log_prob, value, hidden = agent.choose_action(state, hidden)
             next_state, reward, done, _ = envs.step(action.cpu().numpy())
             log_probs.append(log_prob)
             values.append(value)
             rewards.append(torch.FloatTensor(reward).unsqueeze(1).to(agent.device))
-            masks.append(torch.FloatTensor(1 - done).unsqueeze(1).to(agent.device))
+            mask = torch.FloatTensor(1-done).unsqueeze(1).to(agent.device)
+            hidden = (hidden[0]*mask, hidden[1]*mask)
+            masks.append(mask)
             
             states.append(state)
             actions.append(action)
@@ -109,18 +119,20 @@ if __name__ == '__main__':
             frame_idx+=1
 
         next_state = torch.FloatTensor(next_state).to(agent.device)
-        _, _, next_value = agent.choose_action(next_state)
+        _, _, next_value, hidden = agent.choose_action(next_state, hidden)
         returns = compute_gae(next_value, rewards, masks, values)
 
-        returns   = torch.cat(returns).detach()
-        log_probs = torch.cat(log_probs).detach()
-        values    = torch.cat(values).detach()
+        returns   = torch.cat(returns)
+        log_probs = torch.cat(log_probs)
+        values    = torch.cat(values)
         states    = torch.cat(states)
         actions   = torch.cat(actions)
         advantages = returns - values
         advantages = normalize(advantages)
+        hiddens_0 = torch.cat(hiddens_0)
+        hiddens_1 = torch.cat(hiddens_1)
 
-        agent.learn(frame_idx = frame_idx, states=states, actions=actions, log_probs=log_probs, advantages=advantages, returns=returns)
+        agent.learn(frame_idx = frame_idx, states=states, actions=actions, log_probs=log_probs, advantages=advantages, returns=returns, hiddens=(hiddens_0, hiddens_1))
         training_epochs+=1
 
         if training_epochs%TEST_FREQ == 0:

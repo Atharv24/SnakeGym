@@ -1,6 +1,6 @@
 import numpy as np
 import datetime
-from conv_network import ActorCritic
+from lstm_network import ActorCritic
 import torch
 import torch.optim as optim
 
@@ -17,6 +17,7 @@ class Agent(object):
             self.ppo_epochs = int(ppo_parameters['PPO_EPOCHS'])
             self.critic_discount = float(ppo_parameters['CRITIC_DISCOUNT'])
             self.save_path = ppo_parameters['SAVE_PATH']
+            self.training_sequence_length = 4
         
         self.n_actions = n_actions
         self.input_channels = input_channels
@@ -37,21 +38,21 @@ class Agent(object):
         if ppo_parameters:
             self.optimizer = optim.Adam(self.network.parameters(), lr=self.alpha)
 
-    def choose_action(self, observation):
-        dist, value = self.network(observation)
+    def choose_action(self, observation, hidden):
+        dist, value, hidden = self.network(observation, hidden)
         action = dist.sample()
         log_prob = dist.log_prob(action)
 
-        return action, log_prob, value
+        return action, log_prob, value, hidden
 
-    def ppo_iter(self, states, actions, log_probs, returns, advantages):
+    def ppo_iter(self, states, actions, log_probs, returns, advantages, hiddens):
         batch_size = states.size(0)
-
+        (hiddens_0, hiddens_1) = hiddens
         for _ in range(batch_size // self.minibatch_size):
-            rand_ids = np.random.randint(0, batch_size, self.minibatch_size)
-            yield states[rand_ids, :], actions[rand_ids], log_probs[rand_ids], returns[rand_ids, :], advantages[rand_ids, :]
+            rand_ids = np.random.randint(0, batch_size-9, self.minibatch_size)
+            yield [(states[rand_ids+i*3, :], actions[rand_ids+i*3], log_probs[rand_ids+i*3], returns[rand_ids+i*3, :], advantages[rand_ids+i*3, :]) for i in range(self.training_sequence_length)], (hiddens_0[rand_ids, :], hiddens_1[rand_ids])
 
-    def learn(self, frame_idx, states, actions, log_probs, returns, advantages):
+    def learn(self, frame_idx, states, actions, log_probs, returns, advantages, hiddens):
         count_steps = 0
         sum_returns = 0.0
         sum_advantage = 0.0
@@ -61,19 +62,26 @@ class Agent(object):
         sum_loss_total = 0.0
         
         for _ in range(self.ppo_epochs):
-            for state, action, old_log_probs, return_, advantage in self.ppo_iter(states, actions, log_probs, returns, advantages):
-                dist, value = self.network(state)
-                entropy = dist.entropy().mean()
-                new_log_probs = dist.log_prob(action)
+            #for state, action, old_log_probs, return_, advantage in self.ppo_iter(states, actions, log_probs, returns, advantages):
+            for seq, hidden in self.ppo_iter(states, actions, log_probs, returns, advantages, hiddens):
+                loss = torch.zeros([]).to(self.device)
 
-                ratio = (new_log_probs - old_log_probs).exp()
-                surr1 = ratio * advantage
-                surr2 = torch.clamp(ratio, 1.0 - self.ppo_epsilon, 1.0 + self.ppo_epsilon) * advantage
+                for (state, action, old_log_probs, return_, advantage) in seq:
 
-                actor_loss  = - torch.min(surr1, surr2).mean()
-                critic_loss = (return_ - value).pow(2).mean()
+                    dist, value, hidden = self.network(state, hidden, grads=True)
+                    entropy = dist.entropy().mean()
+                    new_log_probs = dist.log_prob(action)
 
-                loss = self.critic_discount * critic_loss + actor_loss - self.entropy_beta * entropy
+                    ratio = (new_log_probs - old_log_probs).exp()
+                    surr1 = ratio * advantage
+                    surr2 = torch.clamp(ratio, 1.0 - self.ppo_epsilon, 1.0 + self.ppo_epsilon) * advantage
+
+                    actor_loss  = - torch.min(surr1, surr2).mean()
+                    critic_loss = (return_ - value).pow(2).mean()
+
+                    loss += self.critic_discount * critic_loss + actor_loss - self.entropy_beta * entropy
+
+                loss/=self.training_sequence_length
 
                 self.optimizer.zero_grad()
                 loss.backward()

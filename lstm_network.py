@@ -9,7 +9,6 @@ class ActorCritic(nn.Module):
         self.input_channels = input_channels
         self.conv1_filters = int(parameters['CONV1_FILTERS'])
         self.conv2_filters = int(parameters['CONV2_FILTERS'])
-        self.conv3_filters = int(parameters['CONV3_FILTERS'])
         self.conv_filter_size = int(parameters['CONV_FILTER_SIZE'])
         self.stride = int(parameters['CONV_STRIDE'])
         self.hidden_size = int(parameters['HIDDEN_SIZE'])
@@ -22,15 +21,26 @@ class ActorCritic(nn.Module):
             nn.ReLU(),
             nn.Flatten()
         )
-
+        
+        self.lstm = nn.LSTMCell(128, self.hidden_size)
         self.critic_head = nn.Linear(self.hidden_size, 1)
         self.actor_head = nn.Linear(self.hidden_size, n_actions)
 
-    def forward(self, x):
-        features = self.feature_extractor(x)
-        
-        value = self.critic_head(features)
-        probs = F.softmax(self.actor_head(features), dim=1)
-        dist  = Categorical(probs=probs)
+    def forward(self, x, hidden, grads=False):
+        if grads:
+            features = self.feature_extractor(x)
+            hidden = self.lstm(features, hidden)
 
-        return dist, value
+            value = self.critic_head(hidden[0])
+            probs = F.softmax(self.actor_head(hidden[0]), dim=1)
+            dist  = Categorical(probs)
+        else:
+            with torch.no_grad():
+                features = self.feature_extractor(x)
+                hidden = self.lstm(features, hidden)
+
+                value = self.critic_head(hidden[0])
+                probs = F.softmax(self.actor_head(hidden[0]), dim=1)
+                dist  = Categorical(probs)
+
+        return dist, value, hidden

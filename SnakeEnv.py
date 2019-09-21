@@ -10,7 +10,7 @@ class SnakeEnv(object):
         self.visionRadius = visionRadius
         self.appleReward = 1
         self.collisionReward = -1
-        self.appleCount = 1
+        self.appleCount = 5
         self.info = None
         self.observation_space = spaces.Box(low=0, high=1.0, shape=(self.visionRadius*2 + 1, self.visionRadius*2 + 1, 3), dtype=np.float32)
         self.action_space = spaces.Discrete(3)
@@ -75,7 +75,7 @@ class SnakeEnv(object):
 
         self.tail = history
         self.head = head
-        reward=-0.01
+        reward=0
         
         if self.checkApple():
             reward = self.appleReward
