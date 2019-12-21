@@ -1,6 +1,8 @@
 # SnakeGym
 Gym environment based on the classic Snake game. Based on PyTorch and supports parallel data collection from each core of your CPU.
 
+<div style="text-align:center"><img src=resources/game.jpeg></div>
+
 ## Foreword
 I have made this project as modular as possible, allowing easy adjustments to network architecture, learning algorithm, and even for quickly switching from one Gym environment to another.
 
@@ -27,6 +29,9 @@ pip install -r requirements.txt
 Make sure to install latest CUDA and cuDNN if you want to use GPU acceleration.
 
 ## 2. Training Agents
+
+<div style="text-align:center"><img src=resources/training.gif></div>
+
 To train your agent from scratch
 + Setup your parameters in a config file and move it to `configs` folder.
 + Run the following command in `terminal`
@@ -52,6 +57,9 @@ python train.py -config myConfig --resume
 + The training will conclude when the agent reaches the `TARGET_REWARD` in 4 out of 5 test games.
 
 ## 3. Testing Agents
+
+<div style="text-align:center"><img src=resources/testing.gif></div>
+
 To test a trained agent run
 ```Batchfile
 python test.py -agent_name AGENT_NAME -num_games N
