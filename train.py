@@ -1,46 +1,71 @@
-from actor_critic import Agent
+from lib.algos.ppo import Agent
 import torch
-from utils.multiprocessing_env import SubprocVecEnv
-#from multiprocessing_env import SubprocVecEnv
+from lib.utils.multiprocessing_env import SubprocVecEnv
 import numpy as np
-from SnakeEnv import SnakeEnv
+from lib.envs.SnakeEnvSP import SnakeEnv
 import configparser
-import gym
+import argparse
+import os
+import shutil
+
+parser = argparse.ArgumentParser()
+parser.add_argument('-config', help = 'Name of config file to be used')
+parser.add_argument('-resume', type=int, default=False, help = '0 to start afresh, 1 to load saved model')
+args = parser.parse_args()
+
+resume_training = bool(args.resume)
+
+config_path = 'configs/' +  args.config + '.ini'
 
 config = configparser.ConfigParser()
-config.read('config.ini')
+config.read(config_path)
 
-ppo_parameters = config['DEFAULT']
+training_parameters = config['TRAINING_PARAMETERS']
+env_parameters = config['ENV_PARAMETERS']
+ppo_parameters = config['PPO_PARAMETERS']
 network_parameters = config['NETWORK_PARAMETERS']
 
-NUM_ENVS            = int(ppo_parameters['NUM_ENVS'])
-PPO_STEPS           = int(ppo_parameters['PPO_STEPS'])
-GAE_LAMBDA          = 0.95
+EXP_NAME = training_parameters['EXP_NAME']
+exp_directory = os.path.join('experiments', EXP_NAME)
 
-TEST_EPOCHS         = 10
-TEST_FREQ           = int(ppo_parameters['TEST_FREQ'])
-MIN_TEST            = 8
-TARGET_REWARD       = 50
+if not os.path.exists(exp_directory):
+    os.mkdir(exp_directory)
+    os.mkdir(os.path.join(exp_directory, 'saved_model'))
+    os.mkdir(os.path.join(exp_directory, 'logs'))
 
-RENDER_TESTING = int(ppo_parameters['RENDER_TESTING'])
-RENDER_WAIT_TIME = int(ppo_parameters['RENDER_WAIT_TIME'])
+shutil.copyfile(config_path, exp_directory + '/config.ini')
 
+NUM_ENVS = int(training_parameters['NUM_ENVS'])
 
-N_ACTIONS = 3
-GRIDSIZE = 16
-VISION_RADIUS = 6
-INITIAL_LENGTH = 5
+PPO_STEPS = int(ppo_parameters['PPO_STEPS'])
+GAE_LAMBDA = float(ppo_parameters['GAE_LAMBDA'])
 
-def make_env():
+TEST_FREQ = int(training_parameters['TEST_FREQ'])
+TARGET_REWARD = int(training_parameters['TARGET_REWARD'])
+TEST_EPOCHS = 10
+MIN_TEST_CLEARED = 8
+
+RENDER_TRAINING = int(training_parameters['RENDER_TRAINING'])
+RENDER_TESTING = int(training_parameters['RENDER_TESTING'])
+RENDER_WAIT_TIME = int(training_parameters['RENDER_WAIT_TIME'])
+
+HIDDEN_SIZE = int(network_parameters['HIDDEN_SIZE'])
+
+N_ACTIONS = int(env_parameters['N_ACTIONS'])
+GRIDSIZE = int(env_parameters['GRIDSIZE'])
+VISION_RADIUS = int(env_parameters['VISION_RADIUS'])
+INITIAL_LENGTH = int(env_parameters['INITIAL_LENGTH'])
+
+def make_env(renderID):
     # returns a function which creates a single environment
     def _thunk():
-        env = SnakeEnv(GRIDSIZE, VISION_RADIUS, INITIAL_LENGTH, channel_first=True)
+        env = SnakeEnv(GRIDSIZE, VISION_RADIUS, INITIAL_LENGTH, renderID=renderID, renderWait=RENDER_WAIT_TIME, channel_first=True)
         return env
     return _thunk
 
 def test_env(env, agent):
     state = env.reset()
-    hidden = (torch.zeros(1, 128).to(agent.device), torch.zeros(1, 128).to(agent.device))
+    hidden = (torch.zeros(1, HIDDEN_SIZE).to(agent.device), torch.zeros(1, HIDDEN_SIZE).to(agent.device))
     done = False
     total_reward = 0
     steps = 0
@@ -48,8 +73,7 @@ def test_env(env, agent):
         state = torch.FloatTensor(state).unsqueeze(0).to(agent.device)
         action, _, value, hidden = agent.choose_action(state, hidden)
         if RENDER_TESTING:
-            env.render(value.detach().cpu().numpy()[0])
-            env.renderVision()
+            env.render(wait=True)
         next_state, reward, done, _ = env.step(action.cpu().numpy()[0])
         state = next_state
         total_reward += reward
@@ -69,21 +93,24 @@ def compute_gae(next_value, rewards, masks, values, gamma=float(ppo_parameters['
     for step in reversed(range(len(rewards))):
         delta = rewards[step] + gamma * values[step + 1] * masks[step] - values[step]
         gae = delta + gamma * lam * masks[step] * gae
-        # prepend to get correct order back
         returns.insert(0, gae + values[step])
     return returns
 
 if __name__ == '__main__':
 
-    agent = Agent(n_actions = N_ACTIONS, input_channels=3, ppo_parameters=ppo_parameters, network_parameters=network_parameters)
-    agent.load_model('trained_models/SeventhRun')
+    agent = Agent(n_actions = N_ACTIONS, exp_name=EXP_NAME, input_channels=3, ppo_parameters=ppo_parameters, network_parameters=network_parameters)
+    if resume_training:
+        print('Resuming Training\n')
+        agent.load_model()
+    else:
+        print('Initializing Brain\n')
 
-    envs = [make_env() for i in range(NUM_ENVS)]
+    envs = [make_env(i+1) for i in range(NUM_ENVS)]
     envs = SubprocVecEnv(envs)
-    env = SnakeEnv(GRIDSIZE, VISION_RADIUS, INITIAL_LENGTH, renderWait = RENDER_WAIT_TIME, channel_first=True)
+    env = SnakeEnv(GRIDSIZE, VISION_RADIUS, INITIAL_LENGTH, renderWait=RENDER_WAIT_TIME, renderID='Test', channel_first=True)
 
     state = envs.reset()
-    hidden = [torch.zeros(3, 128).to(agent.device), torch.zeros(3, 128).to(agent.device)]
+    hidden = [torch.zeros(NUM_ENVS, HIDDEN_SIZE).to(agent.device), torch.zeros(NUM_ENVS, HIDDEN_SIZE).to(agent.device)]
     early_stop = False
     
     training_epochs = 0
@@ -104,6 +131,8 @@ if __name__ == '__main__':
             hiddens_1.append(hidden[1])
             state = torch.FloatTensor(state).to(agent.device)
             action, log_prob, value, hidden = agent.choose_action(state, hidden)
+            if RENDER_TRAINING:
+                envs.render()
             next_state, reward, done, _ = envs.step(action.cpu().numpy())
             log_probs.append(log_prob)
             values.append(value)
@@ -146,11 +175,11 @@ if __name__ == '__main__':
                 test_rewards.append(total_reward)
                 if total_reward >= TARGET_REWARD:
                     games_cleared +=1
-                    if games_cleared == MIN_TEST:
+                    if games_cleared == MIN_TEST_CLEARED:
                         early_stop = True
                         print("Agent trained successfully!")
                         break
-            print(f"The Agent cleared {games_cleared}/{MIN_TEST} games this update!")
+            print(f"The Agent cleared {games_cleared}/{MIN_TEST_CLEARED} games this update!")
             print(f"Average Reward: {reward_sum/TEST_EPOCHS}", "\n")
 
     if early_stop:
