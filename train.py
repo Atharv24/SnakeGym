@@ -7,6 +7,8 @@ import configparser
 import argparse
 import os
 import shutil
+from tqdm import trange
+import cv2
 
 parser = argparse.ArgumentParser()
 parser.add_argument('-config', help = 'Name of config file to be used')
@@ -32,8 +34,8 @@ if not os.path.exists(agent_directory):
     os.mkdir(agent_directory)
     os.mkdir(os.path.join(agent_directory, 'saved_model'))
     os.mkdir(os.path.join(agent_directory, 'logs'))
-
-shutil.copyfile(config_path, agent_directory + '/config.ini')
+        
+shutil.copyfile(config_path, os.path.join(agent_directory, 'config.ini'))
 
 NUM_ENVS = int(training_parameters['NUM_ENVS'])
 
@@ -110,7 +112,8 @@ if __name__ == '__main__':
         hiddens_0 = []
         hiddens_1 = []
 
-        for _ in range(PPO_STEPS):
+        t = trange(PPO_STEPS, desc=f'{AGENT_NAME} is playing', unit='step', leave=False)
+        for _ in t:
             hiddens_0.append(hidden[0])
             hiddens_1.append(hidden[1])
             state = torch.FloatTensor(state).to(agent.device)
@@ -130,6 +133,8 @@ if __name__ == '__main__':
             
             state = next_state
             frame_idx+=1
+
+        cv2.destroyAllWindows()
 
         next_state = torch.FloatTensor(next_state).to(agent.device)
         _, _, next_value, hidden = agent.choose_action(next_state, hidden)
@@ -163,10 +168,13 @@ if __name__ == '__main__':
                         early_stop = True
                         print("Agent trained successfully!")
                         break
+            cv2.destroyAllWindows()
             print(f"The Agent cleared {games_cleared}/{MIN_TEST_CLEARED} games this update!")
-            print(f"Average Reward: {reward_sum/TEST_EPOCHS}", "\n")
+            print(f"Average Reward: {reward_sum/TEST_EPOCHS}")
+            print(f"Epochs done: {training_epochs}", '\n')
 
     if early_stop:
         RENDER_TESTING = True
         for _ in range(TEST_EPOCHS):
             print(test_env(env, agent))
+        cv2.destroyAllWindows()

@@ -3,12 +3,14 @@ import datetime
 from ..nets.lstm_network import ActorCritic
 import torch
 import torch.optim as optim
+from tqdm import trange
 
 from tensorboardX import SummaryWriter
 
 class Agent(object):
     def __init__(self, agent_name, input_channels, network_parameters, ppo_parameters=None, n_actions=3):
-        self.save_path = 'agents/' + agent_name + '/'
+        self.name = agent_name
+        self.save_path = 'agents/' + self.name + '/'
         self.n_actions = n_actions
         self.input_channels = input_channels
         self.action_space = [i for i in range(n_actions)]
@@ -71,7 +73,8 @@ class Agent(object):
         sum_entropy = 0.0
         sum_loss_total = 0.0
         
-        for _ in range(self.ppo_epochs):
+        t = trange(self.ppo_epochs, desc=f'{self.name} is learning', unit='update', leave=False)
+        for _ in t:
             for seq, hidden in self.ppo_iter(states, actions, log_probs, returns, advantages, hiddens):
                 loss = torch.zeros([]).to(self.device)
 
