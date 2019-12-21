@@ -6,15 +6,15 @@ from lib.algos.ppo import Agent
 from lib.envs.SnakeEnvSP import SnakeEnv
 
 parser = argparse.ArgumentParser()
-parser.add_argument('-exp_name', help='Name of experiment to load')
+parser.add_argument('-agent_name', help='Name of agent to load')
 parser.add_argument('-num_games', type=int, default = 5, help='Number of games to test for')
 args = parser.parse_args()
 
-exp_name = args.exp_name
-exp_path = 'experiments/' + exp_name + '/'
+agent_name = args.agent_name
+agent_path = 'agents/' + agent_name + '/'
 
 config = configparser.ConfigParser()
-config.read(exp_path + 'config.ini')
+config.read(agent_path + 'config.ini')
 
 network_parameters = config['NETWORK_PARAMETERS']
 env_parameters = config['ENV_PARAMETERS']
@@ -28,7 +28,7 @@ INITIAL_LENGTH = int(env_parameters['INITIAL_LENGTH'])
 
 NUM_GAMES = args.num_games
 
-agent = Agent(n_actions=N_ACTIONS, exp_name=exp_name, input_channels=3, ppo_parameters=None, network_parameters=network_parameters)
+agent = Agent(n_actions=N_ACTIONS, agent_name=agent_name, input_channels=3, ppo_parameters=None, network_parameters=network_parameters)
 env = SnakeEnv(gridSize=GRIDSIZE, visionRadius=VISION_RADIUS, initialSnakeLength=INITIAL_LENGTH, renderID='Test', renderWait=100, channel_first=True)
 
 agent.load_model(testing=True)

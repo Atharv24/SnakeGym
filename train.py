@@ -1,4 +1,4 @@
-from lib.algos.ppo import Agent
+from lib.algos.ppo import Agent, compute_gae
 import torch
 from lib.utils.multiprocessing_env import SubprocVecEnv
 import numpy as np
@@ -25,25 +25,26 @@ env_parameters = config['ENV_PARAMETERS']
 ppo_parameters = config['PPO_PARAMETERS']
 network_parameters = config['NETWORK_PARAMETERS']
 
-EXP_NAME = training_parameters['EXP_NAME']
-exp_directory = os.path.join('experiments', EXP_NAME)
+AGENT_NAME = training_parameters['AGENT_NAME']
+agent_directory = os.path.join('agents', AGENT_NAME)
 
-if not os.path.exists(exp_directory):
-    os.mkdir(exp_directory)
-    os.mkdir(os.path.join(exp_directory, 'saved_model'))
-    os.mkdir(os.path.join(exp_directory, 'logs'))
+if not os.path.exists(agent_directory):
+    os.mkdir(agent_directory)
+    os.mkdir(os.path.join(agent_directory, 'saved_model'))
+    os.mkdir(os.path.join(agent_directory, 'logs'))
 
-shutil.copyfile(config_path, exp_directory + '/config.ini')
+shutil.copyfile(config_path, agent_directory + '/config.ini')
 
 NUM_ENVS = int(training_parameters['NUM_ENVS'])
 
 PPO_STEPS = int(ppo_parameters['PPO_STEPS'])
 GAE_LAMBDA = float(ppo_parameters['GAE_LAMBDA'])
+GAMMA = float(ppo_parameters['GAMMA'])
 
 TEST_FREQ = int(training_parameters['TEST_FREQ'])
 TARGET_REWARD = int(training_parameters['TARGET_REWARD'])
-TEST_EPOCHS = 10
-MIN_TEST_CLEARED = 8
+TEST_EPOCHS = 5
+MIN_TEST_CLEARED = 4
 
 RENDER_TRAINING = int(training_parameters['RENDER_TRAINING'])
 RENDER_TESTING = int(training_parameters['RENDER_TESTING'])
@@ -85,20 +86,9 @@ def normalize(x):
     x /= (x.std() + 1e-8)
     return x
 
-
-def compute_gae(next_value, rewards, masks, values, gamma=float(ppo_parameters['GAMMA']), lam=GAE_LAMBDA):
-    values = values + [next_value]
-    gae = 0
-    returns = []
-    for step in reversed(range(len(rewards))):
-        delta = rewards[step] + gamma * values[step + 1] * masks[step] - values[step]
-        gae = delta + gamma * lam * masks[step] * gae
-        returns.insert(0, gae + values[step])
-    return returns
-
 if __name__ == '__main__':
 
-    agent = Agent(n_actions = N_ACTIONS, exp_name=EXP_NAME, input_channels=3, ppo_parameters=ppo_parameters, network_parameters=network_parameters)
+    agent = Agent(n_actions = N_ACTIONS, agent_name=AGENT_NAME, input_channels=3, ppo_parameters=ppo_parameters, network_parameters=network_parameters)
     if resume_training:
         print('Resuming Training\n')
         agent.load_model()
@@ -149,7 +139,7 @@ if __name__ == '__main__':
 
         next_state = torch.FloatTensor(next_state).to(agent.device)
         _, _, next_value, hidden = agent.choose_action(next_state, hidden)
-        returns = compute_gae(next_value, rewards, masks, values)
+        returns = compute_gae(next_value, rewards, masks, values, gamma=GAMMA, lam=GAE_LAMBDA)
 
         returns   = torch.cat(returns)
         log_probs = torch.cat(log_probs)

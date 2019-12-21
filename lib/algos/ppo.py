@@ -7,8 +7,8 @@ import torch.optim as optim
 from tensorboardX import SummaryWriter
 
 class Agent(object):
-    def __init__(self, exp_name, input_channels, network_parameters, ppo_parameters=None, n_actions=3):
-        self.save_path = 'experiments/' + exp_name + '/'
+    def __init__(self, agent_name, input_channels, network_parameters, ppo_parameters=None, n_actions=3):
+        self.save_path = 'agents/' + agent_name + '/'
         self.n_actions = n_actions
         self.input_channels = input_channels
         self.action_space = [i for i in range(n_actions)]
@@ -112,3 +112,13 @@ class Agent(object):
         if not testing:
             self.optimizer.load_state_dict(torch.load(self.save_path + 'saved_model/optimizer_weights.pt'))
         print('Brain succesfully loaded\n')
+
+def compute_gae(next_value, rewards, masks, values, gamma=0.9, lam=0.95):
+    values = values + [next_value]
+    gae = 0
+    returns = []
+    for step in reversed(range(len(rewards))):
+        delta = rewards[step] + gamma * values[step + 1] * masks[step] - values[step]
+        gae = delta + gamma * lam * masks[step] * gae
+        returns.insert(0, gae + values[step])
+    return returns
