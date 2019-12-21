@@ -4,13 +4,13 @@ from gym import spaces
 import cv2
 
 class SnakeEnv(object):
-    def __init__(self, gridSize=16, visionRadius=3, initialSnakeLength=4, renderID=0, renderWait=100, channel_first=False):
-        self.initialLength = initialSnakeLength
-        self.gridSize = gridSize
-        self.visionRadius = visionRadius
+    def __init__(self, env_parameters, renderID=0, renderWait=100, channel_first=False):
+        self.initialLength = int(env_parameters['INITIAL_LENGTH'])
+        self.gridSize = int(env_parameters['GRIDSIZE'])
+        self.visionRadius = int(env_parameters['VISION_RADIUS'])
         self.appleReward = 1
         self.collisionReward = -1
-        self.appleCount = 5
+        self.appleCount = int(env_parameters['APPLE_COUNT'])
         self.score = 0
         self.info = None
         self.observation_space = spaces.Box(low=0, high=1.0, shape=(self.visionRadius*2 + 1, self.visionRadius*2 + 1, 3), dtype=np.float32)

@@ -21,15 +21,10 @@ env_parameters = config['ENV_PARAMETERS']
 
 HIDDEN_SIZE = int(network_parameters['HIDDEN_SIZE'])
 
-N_ACTIONS = int(env_parameters['N_ACTIONS'])
-GRIDSIZE = int(env_parameters['GRIDSIZE'])
-VISION_RADIUS = int(env_parameters['VISION_RADIUS'])
-INITIAL_LENGTH = int(env_parameters['INITIAL_LENGTH'])
-
 NUM_GAMES = args.num_games
 
-agent = Agent(n_actions=N_ACTIONS, agent_name=agent_name, input_channels=3, ppo_parameters=None, network_parameters=network_parameters)
-env = SnakeEnv(gridSize=GRIDSIZE, visionRadius=VISION_RADIUS, initialSnakeLength=INITIAL_LENGTH, renderID='Test', renderWait=100, channel_first=True)
+env = SnakeEnv(env_parameters=env_parameters, renderID='Test', renderWait=100, channel_first=True)
+agent = Agent(n_actions=env.action_space.n, agent_name=agent_name, input_channels=3, ppo_parameters=None, network_parameters=network_parameters)
 
 agent.load_model(testing=True)
 if __name__ == '__main__':

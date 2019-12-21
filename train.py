@@ -1,4 +1,4 @@
-from lib.algos.ppo import Agent, compute_gae
+from lib.algos.ppo import Agent
 import torch
 from lib.utils.multiprocessing_env import SubprocVecEnv
 import numpy as np
@@ -10,10 +10,10 @@ import shutil
 
 parser = argparse.ArgumentParser()
 parser.add_argument('-config', help = 'Name of config file to be used')
-parser.add_argument('-resume', type=int, default=False, help = '0 to start afresh, 1 to load saved model')
+parser.add_argument('--resume', action='store_true', help = 'Use this argument to resume training from a saved agent')
 args = parser.parse_args()
 
-resume_training = bool(args.resume)
+resume_training = args.resume
 
 config_path = 'configs/' +  args.config + '.ini'
 
@@ -37,9 +37,7 @@ shutil.copyfile(config_path, agent_directory + '/config.ini')
 
 NUM_ENVS = int(training_parameters['NUM_ENVS'])
 
-PPO_STEPS = int(ppo_parameters['PPO_STEPS'])
-GAE_LAMBDA = float(ppo_parameters['GAE_LAMBDA'])
-GAMMA = float(ppo_parameters['GAMMA'])
+PPO_STEPS = int(training_parameters['PPO_STEPS'])
 
 TEST_FREQ = int(training_parameters['TEST_FREQ'])
 TARGET_REWARD = int(training_parameters['TARGET_REWARD'])
@@ -52,15 +50,10 @@ RENDER_WAIT_TIME = int(training_parameters['RENDER_WAIT_TIME'])
 
 HIDDEN_SIZE = int(network_parameters['HIDDEN_SIZE'])
 
-N_ACTIONS = int(env_parameters['N_ACTIONS'])
-GRIDSIZE = int(env_parameters['GRIDSIZE'])
-VISION_RADIUS = int(env_parameters['VISION_RADIUS'])
-INITIAL_LENGTH = int(env_parameters['INITIAL_LENGTH'])
-
 def make_env(renderID):
     # returns a function which creates a single environment
     def _thunk():
-        env = SnakeEnv(GRIDSIZE, VISION_RADIUS, INITIAL_LENGTH, renderID=renderID, renderWait=RENDER_WAIT_TIME, channel_first=True)
+        env = SnakeEnv(env_parameters=env_parameters, renderID=renderID, renderWait=RENDER_WAIT_TIME, channel_first=True)
         return env
     return _thunk
 
@@ -87,17 +80,18 @@ def normalize(x):
     return x
 
 if __name__ == '__main__':
+    envs = [make_env(i+1) for i in range(NUM_ENVS)]
+    envs = SubprocVecEnv(envs)
+    env = SnakeEnv(env_parameters=env_parameters, renderWait=RENDER_WAIT_TIME, renderID='Test', channel_first=True)
 
-    agent = Agent(n_actions = N_ACTIONS, agent_name=AGENT_NAME, input_channels=3, ppo_parameters=ppo_parameters, network_parameters=network_parameters)
+    n_actions = env.action_space.n
+
+    agent = Agent(n_actions = n_actions, agent_name=AGENT_NAME, input_channels=3, ppo_parameters=ppo_parameters, network_parameters=network_parameters)
     if resume_training:
         print('Resuming Training\n')
         agent.load_model()
     else:
         print('Initializing Brain\n')
-
-    envs = [make_env(i+1) for i in range(NUM_ENVS)]
-    envs = SubprocVecEnv(envs)
-    env = SnakeEnv(GRIDSIZE, VISION_RADIUS, INITIAL_LENGTH, renderWait=RENDER_WAIT_TIME, renderID='Test', channel_first=True)
 
     state = envs.reset()
     hidden = [torch.zeros(NUM_ENVS, HIDDEN_SIZE).to(agent.device), torch.zeros(NUM_ENVS, HIDDEN_SIZE).to(agent.device)]
@@ -139,7 +133,7 @@ if __name__ == '__main__':
 
         next_state = torch.FloatTensor(next_state).to(agent.device)
         _, _, next_value, hidden = agent.choose_action(next_state, hidden)
-        returns = compute_gae(next_value, rewards, masks, values, gamma=GAMMA, lam=GAE_LAMBDA)
+        returns = agent.compute_gae(next_value, rewards, masks, values)
 
         returns   = torch.cat(returns)
         log_probs = torch.cat(log_probs)

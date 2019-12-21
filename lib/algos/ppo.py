@@ -15,6 +15,7 @@ class Agent(object):
         
         if ppo_parameters:
             self.gamma = float(ppo_parameters['GAMMA'])
+            self.lam = float(ppo_parameters['GAE_LAMBDA'])
             self.alpha = float(ppo_parameters['LEARNING_RATE'])
             self.ppo_epsilon = float(ppo_parameters['PPO_EPSILON'])
             self.entropy_beta = float(ppo_parameters['ENTROPY_BETA'])
@@ -43,6 +44,16 @@ class Agent(object):
         log_prob = dist.log_prob(action)
 
         return action, log_prob, value, hidden
+
+    def compute_gae(self, next_value, rewards, masks, values):
+        values = values + [next_value]
+        gae = 0
+        returns = []
+        for step in reversed(range(len(rewards))):
+            delta = rewards[step] + self.gamma * values[step + 1] * masks[step] - values[step]
+            gae = delta + self.gamma * self.lam * masks[step] * gae
+            returns.insert(0, gae + values[step])
+        return returns
 
     def ppo_iter(self, states, actions, log_probs, returns, advantages, hiddens):
         batch_size = states.size(0)
@@ -112,13 +123,3 @@ class Agent(object):
         if not testing:
             self.optimizer.load_state_dict(torch.load(self.save_path + 'saved_model/optimizer_weights.pt'))
         print('Brain succesfully loaded\n')
-
-def compute_gae(next_value, rewards, masks, values, gamma=0.9, lam=0.95):
-    values = values + [next_value]
-    gae = 0
-    returns = []
-    for step in reversed(range(len(rewards))):
-        delta = rewards[step] + gamma * values[step + 1] * masks[step] - values[step]
-        gae = delta + gamma * lam * masks[step] * gae
-        returns.insert(0, gae + values[step])
-    return returns
