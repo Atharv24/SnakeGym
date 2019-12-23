@@ -20,7 +20,7 @@ git clone https://github.com/Atharv24/SnakeGym.git
 ```
 
 All dependencies required by this repo are listed in `requirements.txt`.
-You can install them manually or setup a virtual environment with Python 3.6 by running
+You can install them manually or setup a virtual environment with PyTorch and running
 
 ``` Batchfile
 pip install -r requirements.txt
