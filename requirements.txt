@@ -1,4 +1,4 @@
 torch==1.2.0
-numpy==1.16.3
+numpy==1.22.0
 gym==0.13.0
 opencv-python==4.1.0.25
